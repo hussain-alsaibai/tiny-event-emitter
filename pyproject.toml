@@ -1,0 +1,24 @@
+[project]
+name = "tiny-event-emitter"
+version = "1.0.0"
+description = "Zero-dependency Node.js-style EventEmitter. Pub/sub, async, wildcard, thread-safe variant."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Hussain Al-Saibai", email = "hussain.alsaibai@gmail.com" }]
+requires-python = ">=3.8"
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Intended Audience :: Developers",
+]
+keywords = ["events", "pubsub", "event-emitter", "zero-dependency", "stdlib"]
+
+[project.urls]
+Homepage = "https://github.com/hussain-alsaibai/tiny-event-emitter"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["tiny_event_emitter"]
