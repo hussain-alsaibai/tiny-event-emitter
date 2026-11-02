@@ -156,6 +156,28 @@ curl -O https://raw.githubusercontent.com/hussain-alsaibai/tiny-event-emitter/ma
 
 ---
 
+## Two implementations
+
+This package ships two independent, zero-dependency implementations. Both are
+tested on Python 3.8-3.12 and both are installed by `pip install tiny-event-emitter`.
+
+| Module | Style | Use it when |
+|---|---|---|
+| `tiny_event_emitter` | Node.js `EventEmitter` API | You want `on`/`once`/`off`/`emit` that returns `self`, `prepend`, `on_error`, `set_max_listeners`, or a thread-safe variant. This is the default and the one the README above describes. |
+| `event_emitter` | Async-first, event-object API | You want `on_async`, explicit `on_wildcard`/`off_wildcard`, `emit_loop`, `clear`, an `Event` object, or Server-Sent Events via `sse_format()`. |
+
+They do not share a base class and are not interchangeable - the method
+signatures differ (`emit()` returns `bool` in one and `list` in the other, and
+`off()` takes a function in one and a listener id in the other). Import the one
+whose API matches what you are writing.
+
+```python
+from tiny_event_emitter import EventEmitter   # Node-style
+from event_emitter import EventEmitter, sse_format  # async-first
+```
+
+---
+
 ## License
 
 MIT © 2026 Hussain Al-Saibai

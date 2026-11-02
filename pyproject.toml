@@ -21,4 +21,6 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["tiny_event_emitter"]
+# Both implementations ship: tiny_event_emitter (Node-style, the default)
+# and event_emitter (async/SSE-oriented).
+py-modules = ["tiny_event_emitter", "event_emitter"]
