@@ -13,6 +13,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      # Install pytest AND the package itself. The workflow previously had no
+      # install step at all, so pytest was missing and every run failed with
+      # "No module named pytest".
+      - run: pip install -e . pytest
       # No file list: pytest collects every test_*.py, so a new test file is
       # never silently skipped. The previous command named test_*.py, which
       # misses tests/ entirely.
