@@ -147,7 +147,8 @@ t1.join(); t2.join()
 ## Install
 
 ```bash
-pip install tiny-event-emitter
+# From GitHub (recommended -- not yet on PyPI)
+pip install git+https://github.com/hussain-alsaibai/tiny-event-emitter.git
 ```
 
 Or copy the single file:
