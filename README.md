@@ -3,7 +3,8 @@
 > **Zero-dependency Node.js-style EventEmitter.** Pub/sub, async listeners, once, wildcard patterns, thread-safe variant. Pure Python stdlib. One file. MIT.
 
 ```
-pip install tiny-event-emitter
+# From GitHub (recommended -- not yet on PyPI)
+pip install git+https://github.com/hussain-alsaibai/tiny-event-emitter.git
 ```
 or just copy `tiny_event_emitter.py` into your project.
 
