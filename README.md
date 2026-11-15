@@ -161,7 +161,7 @@ curl -O https://raw.githubusercontent.com/hussain-alsaibai/tiny-event-emitter/ma
 ## Two implementations
 
 This package ships two independent, zero-dependency implementations. Both are
-tested on Python 3.8-3.12 and both are installed by `pip install tiny-event-emitter`.
+tested on Python 3.8-3.12 and both are installed by `pip install git+https://github.com/hussain-alsaibai/tiny-event-emitter.git`.
 
 | Module | Style | Use it when |
 |---|---|---|
