@@ -1,7 +1,7 @@
 [project]
 name = "tiny-event-emitter"
-version = "1.0.0"
-description = "Zero-dependency Node.js-style EventEmitter. Pub/sub, async, wildcard, thread-safe variant."
+version = "1.0.1"
+description = "Zero-dependency event emitters for Python: Node.js-style API plus an async-first, event-object API with SSE helpers."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Hussain Al-Saibai", email = "hussain.alsaibai@gmail.com" }]

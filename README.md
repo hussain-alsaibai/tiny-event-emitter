@@ -178,6 +178,63 @@ from tiny_event_emitter import EventEmitter   # Node-style
 from event_emitter import EventEmitter, sse_format  # async-first
 ```
 
+### `event_emitter` in full
+
+This is the module for when the **listener** side is async: an agent loop, an
+SSE response, a queue writer. Listeners always receive an `Event`
+(`name`, `data`, `id`, `timestamp`), never a bare payload.
+
+```python
+import asyncio
+from event_emitter import EventEmitter, on_async, once, sse_format
+
+bus = EventEmitter(lock=True)
+
+def log(event):                      # sync listener
+    print("tool:", event.data["tool"])
+
+async def record(event):             # async listener
+    await write_audit_row(event)
+
+bus.on("agent:tool_call", log)
+bus.on_async("agent:tool_call", record)
+
+await bus.emit_async("agent:tool_call", {"tool": "grep"})
+```
+
+`emit_async()` runs **both** kinds. `emit()` runs the sync ones inline and
+schedules the async ones on the running loop, so a synchronous producer can
+still feed an async consumer.
+
+Subscribe to a stream of events with the async-iterator helpers. Both are
+**regular** functions that return an async iterator, and both subscribe
+immediately, so nothing emitted between creation and the first iteration is
+lost:
+
+```python
+stream = on_async(bus, "job:*")      # no await
+async for event in stream:
+    ...
+
+first = once(bus, "ready")           # no await
+event = await first.__anext__()      # on 3.10+ you can write anext(first)
+```
+
+Patterns registered through `on()` / `on_async()` are matched as patterns, so
+`bus.on("db:*", fn)` receives `db:open` and `db:close`. `on_wildcard()` and
+`off_wildcard()` manage them explicitly.
+
+SSE framing:
+
+```python
+sse_format("tool_call", {"tool": "grep"}, id="abc123")
+# 'event: tool_call\ndata: {"tool": "grep"}\nid: abc123\n\n'
+```
+
+Run [`examples/async_streams.py`](examples/async_streams.py) for an executable
+version of everything above; it asserts each claim and exits non-zero if one
+stops being true.
+
 ---
 
 ## License

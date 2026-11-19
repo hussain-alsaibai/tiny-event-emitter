@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import re
 import threading
+import warnings
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -137,47 +138,121 @@ class EventEmitter:
             raise
 
     def _emit_sync(self, event_name: str, data: Any) -> list[Any]:
+        """Run the listeners registered for a *synchronous* emit.
+
+        Sync listeners registered with on() run and their results are
+        returned. Async listeners registered with on_async() are handed the
+        event on the running loop as a task, so a queue-backed consumer
+        (``on_async()`` streams, SSE writers) still receives events emitted
+        from synchronous code. Their return values cannot be part of
+        ``results``, because nothing awaits them here.
+
+        If there is no running loop, an async listener is skipped and a
+        ``RuntimeWarning`` is emitted -- dropping an event silently is the
+        bug this replaced.
+        """
         results = []
         # Collect all matching listeners
         listeners_to_call: list[tuple[bool, tuple[str, Listener]]] = []
 
         with self._lock or self._lock or __import__("contextlib").nullcontext():
-            # Regular listeners
-            for lid, listener in self._listeners.get(event_name, []):
-                listeners_to_call.append((False, (lid, listener)))
-            # Once listeners (consume them)
-            for lid, listener in self._once.pop(event_name, []):
-                listeners_to_call.append((False, (lid, listener)))
-            # Wildcard listeners
+            # Regular listeners -- exact name, plus any pattern key that
+            # matches. on()/once() register a pattern in the same dict under
+            # the pattern string, so a "db:*" key must be matched, not looked
+            # up literally. Only the exact-name key is consumed for once
+            # listeners; a pattern bucket is shared by every emit.
+            for key, bucket in self._listeners.items():
+                if key == event_name or _match_wildcard(key, event_name):
+                    listeners_to_call.extend((False, item) for item in bucket)
+            for key, bucket in self._async_listeners.items():
+                if key == event_name or _match_wildcard(key, event_name):
+                    listeners_to_call.extend((True, item) for item in bucket)
+            for key in [k for k in self._once if k == event_name or _match_wildcard(k, event_name)]:
+                bucket = self._once.get(key)
+                if bucket:
+                    listeners_to_call.extend((False, item) for item in bucket)
+                    del self._once[key]
+            # Explicit wildcard listeners (on_wildcard)
             for pattern, listener in self._wildcards:
                 if _match_wildcard(pattern, event_name):
                     listeners_to_call.append((False, (pattern, listener)))
 
+        if any(is_async for is_async, _ in listeners_to_call):
+            coros = [
+                self._run_async(listener, (Event(event_name, data),), {})
+                for is_async, (_, listener) in listeners_to_call
+                if is_async
+            ]
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                for coro in coros:
+                    coro.close()
+                warnings.warn(
+                    f"{len(coros)} async listener(s) for {event_name!r} were "
+                    "skipped: emit() has no running event loop. Use "
+                    "await emit_async(...) or call emit() from a coroutine.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            else:
+                for coro in coros:
+                    loop.create_task(coro)
+
         for is_async, (lid, listener) in listeners_to_call:
+            if is_async:
+                continue
             results.append(self._run(listener, (Event(event_name, data),), {}))
 
         return results
 
     async def _emit_async(self, event_name: str, data: Any) -> list[Any]:
+        """Run **every** listener for an async emit, in registration order.
+
+        Both kinds are dispatched: sync listeners from on() are called
+        directly, async listeners from on_async() are awaited. Skipping the
+        sync ones silently broke the documented pattern of mixing a
+        logging listener with an async worker, and produced no error -- the
+        emit simply returned a short result list.
+        """
         results = []
         listeners_to_call: list[tuple[bool, tuple[str, Listener | AsyncListener]]] = []
 
-        # Collect listeners
-        for lid, listener in self._async_listeners.get(event_name, []):
-            listeners_to_call.append((True, (lid, listener)))
-        for lid, listener in self._once_async.pop(event_name, []):
-            listeners_to_call.append((True, (lid, listener)))
+        # Every bucket may be keyed by an event name or by a pattern, so each
+        # key is tested rather than looked up literally.
+        def matching(store):
+            for key in list(store):
+                if key == event_name or _match_wildcard(key, event_name):
+                    yield from store[key]
+
+        # Sync listeners (a sync fn may still return a coroutine, which
+        # _run_async awaits for us).
+        for item in matching(self._listeners):
+            listeners_to_call.append((False, item))
+        for key in [k for k in list(self._once) if k == event_name or _match_wildcard(k, event_name)]:
+            bucket = self._once.get(key) or []
+            listeners_to_call.extend((False, item) for item in bucket)
+            self._once.pop(key, None)
+        # Async listeners
+        for item in matching(self._async_listeners):
+            listeners_to_call.append((True, item))
+        for key in [k for k in list(self._once_async) if k == event_name or _match_wildcard(k, event_name)]:
+            bucket = self._once_async.get(key) or []
+            listeners_to_call.extend((True, item) for item in bucket)
+            self._once_async.pop(key, None)
         for pattern, listener in self._wildcards:
             if _match_wildcard(pattern, event_name):
                 listeners_to_call.append((False, (pattern, listener)))
 
         for is_async, (lid, listener) in listeners_to_call:
-            if is_async:
-                results.append(
-                    await self._run_async(listener, (Event(event_name, data),), {})
-                )
-            else:
-                results.append(self._run(listener, (Event(event_name, data),), {}))
+            # _run_async handles both kinds: it awaits a coroutine result and
+            # returns a plain value unchanged. Routing the sync listeners
+            # through it too means a sync listener that returns a coroutine is
+            # awaited instead of leaking an un-awaited coroutine object into
+            # the results list.
+            results.append(
+                await self._run_async(listener, (Event(event_name, data),), {})
+            )
 
         return results
 
@@ -219,15 +294,20 @@ class EventEmitter:
                 # Remove from all stores
                 removed = False
                 for store in [self._listeners, self._once, self._async_listeners, self._once_async]:
-                    store[event][:] = [
-                        (lid, l) for lid, l in store[event] if lid != listener_id
-                    ]
-                    if any(lid == listener_id for lid, _ in store[event]):
+                    bucket = store.get(event)
+                    if not bucket:
+                        continue
+                    keep = [(lid, l) for lid, l in bucket if lid != listener_id]
+                    if len(keep) != len(bucket):
                         removed = True
-                # Wildcard
-                self._wildcards[:] = [
-                    (p, l) for p, l in self._wildcards if p != listener_id
-                ]
+                    store[event][:] = keep
+                    # Drop the bucket entirely once empty. `store` is a
+                    # defaultdict, so leaving a key behind also keeps the
+                    # event in event_names().
+                    if not store[event]:
+                        del store[event]
+                # Wildcard listeners are keyed by pattern, so removing by
+                # listener id only makes sense for the stores above.
                 return removed
             else:
                 for store in [self._listeners, self._once, self._async_listeners, self._once_async]:
@@ -333,52 +413,105 @@ def _match_wildcard(pattern: str, event: str) -> bool:
 # ----------------------------------------------------------------------
 
 
-def once(emitter: EventEmitter, event: str) -> Iterator[Event]:
+class _Waiter:
+    """A one-shot wake-up that works across the loop, on 3.8 and later.
+
+    ``asyncio.Queue()`` binds to the current loop at construction on 3.8,
+    which raises when a stream is created outside a coroutine. A bare
+    ``asyncio.Event`` has the same problem. ``get_event_loop().create_future``
+    inside the coroutine is safe everywhere, so the buffer is a plain list and
+    the wake-up is a future created lazily on the consuming loop.
     """
-    Generator that yields the next event matching `event`, then stops.
-    Usage: async for e in once(emitter, "data"): print(e)
-    """
-    queue: asyncio.Queue[Event] = asyncio.Queue()
 
-    async def _listener(e: Event) -> None:
-        await queue.put(e)
+    __slots__ = ("_future",)
 
-    lid = None
+    def __init__(self) -> None:
+        self._future = None
 
-    async def _run():
-        nonlocal lid
-        lid = emitter.on_async(event, _listener)
+    def wake(self) -> None:
+        fut = self._future
+        if fut is not None and not fut.done():
+            fut.set_result(None)
+
+    async def wait(self) -> None:
+        loop = asyncio.get_event_loop()
+        self._future = loop.create_future()
         try:
-            while True:
-                ev = await queue.get()
-                yield ev
-                break
+            await self._future
         finally:
-            if lid:
-                emitter.off(event, lid)
-
-    return _run()
+            self._future = None
 
 
-async def on_async(emitter: EventEmitter, event: str) -> Iterator[Event]:
-    """Async generator: continuously yields events as they arrive."""
-    queue: asyncio.Queue[Event] = asyncio.Queue()
-    lid = [None]  # mutable container for closure
+def once(emitter: EventEmitter, event: str) -> Iterator[Event]:
+    """Yield the next event matching ``event``, then unsubscribe.
 
-    async def _listener(e: Event) -> None:
-        await queue.put(e)
+    ``once()`` is a **regular** function that returns an async iterator, so
+    use it without ``await``::
 
-    async def _runner():
-        lid[0] = emitter.on_async(event, _listener)
+        async for e in once(emitter, "data"):
+            break
+
+    The listener is registered before the call returns, so an event emitted
+    on the same loop turn still lands in the buffer.
+    """
+    buffer: list = []
+    waiter = _Waiter()
+
+    def _deliver(e: Event) -> None:
+        buffer.append(e)
+        waiter.wake()
+
+    lid = emitter.on_async(event, _deliver)
+
+    async def _gen():
+        try:
+            while not buffer:
+                await waiter.wait()
+            yield buffer.pop(0)
+        finally:
+            emitter.off(event, lid)
+
+    return _gen()
+
+
+def on_async(emitter: EventEmitter, event: str) -> AsyncIterator[Event]:
+    """Async iterator that yields every event matching ``event``.
+
+    ``on_async()`` is a **regular** function returning an async iterator::
+
+        stream = on_async(emitter, "job:*")
+        async for event in stream:
+            ...
+
+    The subscription is created eagerly, at call time. That is the whole
+    point: the previous implementation was an ``async def`` that registered
+    its listener inside the generator body, so nothing emitted before the
+    first ``__anext__`` was ever delivered -- and the documented
+    ``async for x in on_async(...)`` form did not work at all, because
+    iterating the coroutine raised ``TypeError`` instead of subscribing.
+
+    Closing the iterator unsubscribes. A single event delivered while the
+    consumer is busy is buffered, not dropped.
+    """
+    buffer: list = []
+    waiter = _Waiter()
+
+    def _deliver(e: Event) -> None:
+        buffer.append(e)
+        waiter.wake()
+
+    lid = emitter.on_async(event, _deliver)
+
+    async def _gen():
         try:
             while True:
-                ev = await queue.get()
-                yield ev
-        except GeneratorExit:
-            if lid[0]:
-                emitter.off(event, lid[0])
+                while buffer:
+                    yield buffer.pop(0)
+                await waiter.wait()
+        finally:
+            emitter.off(event, lid)
 
-    return _runner()
+    return _gen()
 
 
 # ----------------------------------------------------------------------
